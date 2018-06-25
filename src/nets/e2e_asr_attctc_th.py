@@ -2171,7 +2171,7 @@ class BGRUP(torch.nn.Module):
                 inputdim = idim
             else:
                 inputdim = hdim
-            setattr(self, "bigru%d" % i, torch.nn.GRU(inputdim, cdim, dropout=dropout,
+            setattr(self, "bigrup%d" % i, torch.nn.GRU(inputdim, cdim, dropout=dropout,
                                                         num_layers=1, bidirectional=True, batch_first=True))
             # bottleneck layer to merge
             setattr(self, "bt%d" % i, torch.nn.Linear(2 * cdim, hdim))
@@ -2190,9 +2190,9 @@ class BGRUP(torch.nn.Module):
         # logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
         for layer in six.moves.range(self.elayers):
             xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
-            bilstm = getattr(self, 'bigrup' + str(layer))
-            bilstm.flatten_parameters()
-            ys, (hy, cy) = bilstm(xpack)
+            bigru = getattr(self, 'bigrup' + str(layer))
+            bigru.flatten_parameters()
+            ys, (hy, cy) = bigru(xpack)
             # ys: utt list of frame x cdim x 2 (2: means bidirectional)
             ypad, ilens = pad_packed_sequence(ys, batch_first=True)
             sub = self.subsample[layer + 1]
