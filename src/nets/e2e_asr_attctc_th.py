@@ -2165,7 +2165,7 @@ class VGG2L(torch.nn.Module):
 
 class BGRUP(torch.nn.Module):
     def __init__(self, idim, elayers, cdim, hdim, subsample, dropout):
-        super(BLSTMP, self).__init__()
+        super(BGRUP, self).__init__()
         for i in six.moves.range(elayers):
             if i == 0:
                 inputdim = idim
