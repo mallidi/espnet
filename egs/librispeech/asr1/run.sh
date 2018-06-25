@@ -120,6 +120,7 @@ if [ ${stage} -le 1 ]; then
     echo "stage 1: Feature Generation"
     fbankdir=fbank
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
+    false && {
     for x in dev_clean test_clean dev_other test_other train_clean_100 train_clean_360 train_other_500; do
         steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 32 data/${x} exp/make_fbank/${x} ${fbankdir}
     done
@@ -134,16 +135,16 @@ if [ ${stage} -le 1 ]; then
 
     # compute global CMVN
     compute-cmvn-stats scp:data/${train_set}/feats.scp data/${train_set}/cmvn.ark
-
+    }
     # dump features for training
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_tr_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{14,15,16,17}/${USER}/espnet-data/egs/librispeech/asr1/dump/${train_set}/delta${do_delta}/storage \
+        /export/b{14,15,16,18}/${USER}/espnet-data/egs/librispeech/asr1/dump/${train_set}/delta${do_delta}/storage \
         ${feat_tr_dir}/storage
     fi
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_dt_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{14,15,16,17}/${USER}/espnet-data/egs/librispeech/asr1/dump/${train_dev}/delta${do_delta}/storage \
+        /export/b{14,15,16,18}/${USER}/espnet-data/egs/librispeech/asr1/dump/${train_dev}/delta${do_delta}/storage \
         ${feat_dt_dir}/storage
     fi
     dump.sh --cmd "$train_cmd" --nj 80 --do_delta $do_delta \
