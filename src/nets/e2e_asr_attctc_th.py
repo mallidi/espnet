@@ -173,7 +173,7 @@ class E2E(torch.nn.Module):
         # subsample info
         # +1 means input (+1) and layers outputs (args.elayer)
         subsample = np.ones(args.elayers + 1, dtype=np.int)
-        if args.etype == 'blstmp' or args.etype == 'bgrup':
+        if args.etype == 'blstmp' or args.etype == 'bgrup' or args.etype == 'blstmp_bgrup_v1':
             ss = args.subsample.split("_")
             for j in range(min(args.elayers + 1, len(ss))):
                 subsample[j] = int(ss[j])
@@ -203,8 +203,8 @@ class E2E(torch.nn.Module):
         elif args.atype == 'add':
             self.att = AttAdd(args.eprojs, args.dunits, args.adim)
         elif args.atype == 'location':
-            self.att = AttLoc(args.eprojs, args.dunits,
-                              args.adim, args.aconv_chans, args.aconv_filts)
+            self.att = AttLoc(640, args.dunits,
+                              args.adim, args.aconv_chans, args.aconv_filts) # args.eprojs, hardset to 640 just to make this code working
         elif args.atype == 'location2d':
             self.att = AttLoc2D(args.eprojs, args.dunits,
                                 args.adim, args.awin, args.aconv_chans, args.aconv_filts)
@@ -235,9 +235,9 @@ class E2E(torch.nn.Module):
                 "Error: need to specify an appropriate attention archtecture")
             sys.exit()
         # decoder
-        self.dec = Decoder(args.eprojs, odim, args.dlayers, args.dunits,
+        self.dec = Decoder(640, odim, args.dlayers, args.dunits,
                            self.sos, self.eos, self.att, self.verbose, self.char_list,
-                           labeldist, args.lsm_weight)
+                           labeldist, args.lsm_weight) # args.eprojs, hardset to 640 just to make this code working
 
         # weight initialization
         self.init_like_chainer()
@@ -2006,6 +2006,12 @@ class Encoder(torch.nn.Module):
             self.enc1 = BGRUP(idim, elayers, eunits,
                               eprojs, subsample, dropout)
             logging.info('BGRUP with every-layer projection for encoder')
+        elif etype == 'blstmp_bgrup_v1':
+            self.enc_blstmp = BLSTMP(idim, elayers, eunits,
+                                    eprojs, subsample, dropout)
+            self.enc_bgrup = BGRUP(idim, elayers, eunits,
+                              eprojs, subsample, dropout)
+            logging.info('Use BLSTMP + BGRUP for encoder')
         else:
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
@@ -2032,6 +2038,12 @@ class Encoder(torch.nn.Module):
             xs, ilens = self.enc2(xs, ilens)
         elif self.etype == 'bgrup':
             xs, ilens = self.enc1(xs, ilens)
+        elif self.etype == 'blstmp_bgrup_v1':
+            xs_blstmp, ilens_blstmp = self.enc_blstmp(xs, ilens)
+            xs_bgrup, ilens_bgrup = self.enc_bgrup(xs, ilens)
+
+            xs = torch.cat((xs_blstmp, xs_bgrup), 1)
+            ilens = ilens_blstmp
         else:
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
