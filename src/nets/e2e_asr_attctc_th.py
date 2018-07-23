@@ -71,6 +71,23 @@ def _get_vgg2l_odim(idim, in_channel=3, out_channel=128):
     idim = np.ceil(np.array(idim, dtype=np.float32) / 2)  # 2nd max pooling
     return int(idim) * out_channel  # numer of channels
 
+def _get_maxpooling2_odim(idim, in_channel=3, out_channel=128, ceil_mode=False, mode='regular'):
+
+    idim = idim / in_channel
+    fn = np.ceil if ceil_mode else np.floor
+    if mode == 'regular':
+        s, p, k = [2, 0, 2]
+
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1)
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1)
+    elif mode =='resnetorig':
+        s, p, k = [2, 3, 7]
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1)
+        s, p, k = [2, 1, 3]
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1)
+
+    return int(idim) * out_channel  # numer of channels
+
 
 # get output dim for latter BLSTM
 def _get_max_pooled_size(idim, out_channel=128, n_layers=2, ksize=2, stride=2):
@@ -2038,6 +2055,11 @@ class Encoder(torch.nn.Module):
             self.enc2 = BLSTM(_get_vgg2l_odim(idim, in_channel=in_channel),
                               elayers, eunits, eprojs, dropout)
             logging.info('Use CNN-VGG + BLSTM for encoder')
+        elif etype == 'vggblstm_ruizhili_v1_20180723':
+            self.enc1 = VGG(batch_norm=False, spatial_dp=False, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG + BLSTM ruizhili_v1_20180723 for encoder')
         elif etype == 'bgrup':
             self.enc1 = BGRUP(idim, elayers, eunits,
                               eprojs, subsample, dropout)
@@ -2072,6 +2094,9 @@ class Encoder(torch.nn.Module):
             xs, ilens = self.enc1(xs, ilens)
             xs, ilens = self.enc2(xs, ilens)
         elif self.etype == 'vggblstm':
+            xs, ilens = self.enc1(xs, ilens)
+            xs, ilens = self.enc2(xs, ilens)
+        elif self.etype == 'vggblstm_ruizhili_v1_20180723':
             xs, ilens = self.enc1(xs, ilens)
             xs, ilens = self.enc2(xs, ilens)
         elif self.etype == 'bgrup':
@@ -2259,3 +2284,147 @@ class BGRUP(torch.nn.Module):
             del hy, cy
 
         return xpad, ilens  # x: utt list of frame x dim
+
+
+class VGG(torch.nn.Module):
+
+    def __init__(self, batch_norm=False, spatial_dp=False, ceil_mode=False, in_channels=1,inplace=True, bias=False):
+        super(VGG, self).__init__()
+
+        # self.conv0 = ConvBasicBlock(in_channels, 16, 1, 1, 0, False, True, batch_norm, spatial_dp)
+        self.resblock1 = CNNBasicBlock(in_channels, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=False,inplace=inplace, bias=bias)
+        self.maxpool1 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+
+        self.resblock2 = CNNBasicBlock(64, 128, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=False,inplace=inplace, bias=bias)
+        self.maxpool2 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+        self.in_channels = in_channels
+        self.ceil_mode = ceil_mode
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channels, xs.size(2) // self.in_channels).transpose(1, 2)
+
+        # xs = self.conv0(xs)
+        xs = self.resblock1(xs)
+        xs = self.maxpool1(xs)
+        xs = self.resblock2(xs)
+        xs = self.maxpool2(xs)
+
+        # change ilens accordingly
+        # in maxpooling layer: stride(2), padding(0), kernel(2)
+        s, p, k = [2,0,2]
+
+        fnc = np.ceil if self.ceil_mode else np.floor
+
+        ilens = np.array(
+            fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64)
+        ilens = np.array(
+            fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64).tolist()
+
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+
+        return xs, ilens
+
+
+class CNNBasicBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, batch_norm=False, spatial_dp=False, resnet=False, inplace=True, bias=False):
+        super(CNNBasicBlock, self).__init__()
+
+        # residual: conv3*3 --> (spatial_dp) --> (batchnorm) --> relu --> cov3*3 --> (spatial_dp) --> (batchnorm)
+        # shortcut: conv1*1 --> (spatial_dp) --> (batchnorm)  (optional for resnet)
+        # out: relu(residual + [shortcut])
+
+        self.conv1 = ConvBasicBlock(in_channels, out_channels, 3, stride, 1, bias, True, batch_norm, spatial_dp, inplace=inplace)
+        self.conv2 = ConvBasicBlock(out_channels, out_channels, 3, 1, 1, bias, False, batch_norm, spatial_dp, inplace=inplace)
+        self.relu = torch.nn.ReLU(inplace=True)
+        if (in_channels != out_channels or stride != 1) and resnet:
+            self.downsample = ConvBasicBlock(in_channels, out_channels, 1, stride, 0, bias, False, batch_norm, spatial_dp, inplace=inplace)
+            self.downsampling = True
+        else:
+            self.downsampling = False
+        self.resnet=resnet
+        self.inplace = inplace
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.conv2(out)
+        if self.downsampling and self.resnet:
+            residual = self.downsample(residual)
+            if self.inplace:
+                out += residual
+            else:
+                out = out + residual
+        out = self.relu(out)
+        return out
+
+######################## Reimplementation of CNN part (Ruizhi)
+
+class ConvBasicBlock(torch.nn.Module):
+    """convolution followed by optional batchnorm, nonlinear, spatialdropout, maxpooling"""
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=True, nonlinear=False, batch_norm=False, spatial_dp=False, maxpooling=False, maxpool_kernel_size=3, maxpool_stride=2, maxpool_padding=1, maxpool_ceil_mode=False, inplace=True):
+        super(ConvBasicBlock, self).__init__()
+        self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride,
+                                    padding=padding, bias=bias)
+        # todo see performace diff with/without eval() in dp and bn case
+        self.sdp = torch.nn.Dropout2d() # spatial dropout
+        self.bn = torch.nn.BatchNorm2d(out_channels)
+        self.relu = torch.nn.ReLU(inplace=inplace)
+        self.maxpool = torch.nn.MaxPool2d(kernel_size=maxpool_kernel_size, stride=maxpool_stride,
+                                          padding=maxpool_padding, ceil_mode=maxpool_ceil_mode)
+        self.spatial_dp = spatial_dp
+        self.batch_norm = batch_norm
+        self.nonlinear = nonlinear
+        self.maxpooling = maxpooling
+
+    def forward(self, x):
+        out = self.conv(x)
+        if self.batch_norm: out = self.bn(out)
+        if self.nonlinear: out = self.relu(out)
+        if self.spatial_dp: out = self.sdp(out)
+        if self.maxpooling: out = self.maxpool(out)
+        return out
+
+class CNNBasicBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, batch_norm=False, spatial_dp=False, resnet=False, inplace=True, bias=False):
+        super(CNNBasicBlock, self).__init__()
+
+        # residual: conv3*3 --> (spatial_dp) --> (batchnorm) --> relu --> cov3*3 --> (spatial_dp) --> (batchnorm)
+        # shortcut: conv1*1 --> (spatial_dp) --> (batchnorm)  (optional for resnet)
+        # out: relu(residual + [shortcut])
+
+        self.conv1 = ConvBasicBlock(in_channels, out_channels, 3, stride, 1, bias, True, batch_norm, spatial_dp, inplace=inplace)
+        self.conv2 = ConvBasicBlock(out_channels, out_channels, 3, 1, 1, bias, False, batch_norm, spatial_dp, inplace=inplace)
+        self.relu = torch.nn.ReLU(inplace=True)
+        if (in_channels != out_channels or stride != 1) and resnet:
+            self.downsample = ConvBasicBlock(in_channels, out_channels, 1, stride, 0, bias, False, batch_norm, spatial_dp, inplace=inplace)
+            self.downsampling = True
+        else:
+            self.downsampling = False
+        self.resnet=resnet
+        self.inplace = inplace
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.conv2(out)
+        if self.downsampling and self.resnet:
+            residual = self.downsample(residual)
+            if self.inplace:
+                out += residual
+            else:
+                out = out + residual
+        out = self.relu(out)
+        return out
+
+
