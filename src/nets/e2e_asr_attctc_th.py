@@ -204,7 +204,8 @@ class E2E(torch.nn.Module):
         # subsample info
         # +1 means input (+1) and layers outputs (args.elayer)
         subsample = np.ones(args.elayers + 1, dtype=np.int)
-        if args.etype == 'blstmp' or args.etype == 'bgrup' or args.etype == 'blstmp_bgrup_v1':
+        if args.etype == 'blstmp' or args.etype == 'bgrup' \
+                or args.etype == 'blstmp_bgrup_v1' or args.etype == 'blstmp_bgrup_v2_20180723':
             ss = args.subsample.split("_")
             for j in range(min(args.elayers + 1, len(ss))):
                 subsample[j] = int(ss[j])
@@ -2072,6 +2073,13 @@ class Encoder(torch.nn.Module):
             self.enc_proj = torch.nn.Linear(2*eunits, eunits)
 
             logging.info('Use BLSTMP + BGRUP for encoder')
+        elif etype == 'blstmp_bgrup_v2_20180723':
+            self.enc_blstmp = BLSTMP(idim, elayers, eunits,
+                                     eprojs, subsample, dropout)
+            self.enc_bgrup = BGRUP(idim, elayers, eunits,
+                                   eprojs, subsample, dropout)
+
+            logging.info('Use BLSTMP + BGRUP for encoder')
         else:
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
@@ -2107,6 +2115,12 @@ class Encoder(torch.nn.Module):
             xs = torch.cat((xs_blstmp, xs_bgrup), 2)
 
             xs = self.enc_proj(xs)
+            ilens = ilens_blstmp
+        elif self.etype == 'blstmp_bgrup_v2_20180723':
+            xs_blstmp, ilens_blstmp = self.enc_blstmp(xs, ilens)
+            xs_bgrup, ilens_bgrup = self.enc_bgrup(xs, ilens)
+
+            xs = torch.add(xs_blstmp, xs_bgrup) # simpled adding of two encoders
             ilens = ilens_blstmp
         else:
             logging.error(
