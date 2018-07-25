@@ -59,7 +59,8 @@ def main():
     parser.add_argument('--etype', default='blstmp', type=str,
                         choices=['blstm', 'blstmp', 'vggblstmp', 'vggblstm', 'bgrup',
                                  'blstmp_bgrup_v1', 'blstmp_bgrup_v2_20180723',
-                                 'vggblstm_ruizhili_v1_20180723'],
+                                 'vggblstm_ruizhili_v1_20180723',
+                                 'blstmp_vggblstm_v1'],
                         help='Type of encoder network architecture')
     parser.add_argument('--elayers', default=4, type=int,
                         help='Number of encoder layers')
