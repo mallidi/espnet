@@ -206,7 +206,7 @@ class E2E(torch.nn.Module):
         subsample = np.ones(args.elayers + 1, dtype=np.int)
         if args.etype == 'blstmp' or args.etype == 'bgrup' \
                 or args.etype == 'blstmp_bgrup_v1' or args.etype == 'blstmp_bgrup_v2_20180723' \
-                or args.etype == 'blstmp_vggblstm_v1':
+                or args.etype == 'blstmp_vggblstm_v1' or args.etype == 'blstmp_vggblstm_v2':
             ss = args.subsample.split("_")
             for j in range(min(args.elayers + 1, len(ss))):
                 subsample[j] = int(ss[j])
@@ -2091,7 +2091,16 @@ class Encoder(torch.nn.Module):
 
             self.enc_proj = torch.nn.Linear(2*eunits, eunits)
 
-            logging.info('Use BLSTMP + BGRUP for encoder')
+            logging.info('Use MultiEncoders BLSTMP and VGGBLSTM, for encoder')
+        elif etype == 'blstmp_vggblstm_v2':
+            self.enc_blstmp = BLSTMP(idim, elayers, eunits,
+                                     eprojs, subsample, dropout)
+
+            self.enc_vgg = VGG2L(in_channel)
+            self.enc_vgg_blstmp = BLSTM(_get_vgg2l_odim(idim, in_channel=in_channel),
+                                        elayers, eunits, eprojs, dropout)
+
+            logging.info('Use MultiEncoders BLSTMP and VGGBLSTM, for encoder')
         else:
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
@@ -2146,6 +2155,18 @@ class Encoder(torch.nn.Module):
             xs = torch.cat((xs_blstmp, xs_vgg_blstmp), 2)
 
             xs = self.enc_proj(xs)
+            ilens = ilens_blstmp
+        elif self.etype == 'blstmp_vggblstm_v2':
+
+            # encoder1, blstmp
+            xs_blstmp, ilens_blstmp = self.enc_blstmp(xs, ilens)
+
+            # encoder2, vgg->blstmp
+            xs_vgg, ilens_vgg = self.enc_vgg(xs, ilens)
+            xs_vgg_blstmp, ilens_vgg_blstmp = self.enc_vgg_blstmp(xs_vgg, ilens_vgg)
+
+            xs = torch.add(xs_blstmp, xs_vgg_blstmp) # simpled adding of two encoders
+
             ilens = ilens_blstmp
 
         else:
