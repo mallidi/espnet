@@ -1513,11 +1513,11 @@ class AttMultiHeadCnnAdd(torch.nn.Module):
                 self.cnn_k[h](enc_h_reshaped).transpose(1, 2) for h in six.moves.range(self.aheads)]
 
             # import pdb; pdb.set_trace()
+
             # en_time = time.time()
             # self.cum_elapsed_time += (en_time - st_time)
             # self.cum_elapsed_time_cnt += 1
-
-            print(self.cum_elapsed_time, self.cum_elapsed_time/self.cum_elapsed_time_cnt)
+            # print(self.cum_elapsed_time, self.cum_elapsed_time/self.cum_elapsed_time_cnt)
 
         if self.pre_compute_v is None:
             self.enc_h = enc_hs_pad  # utt x frame x hdim
