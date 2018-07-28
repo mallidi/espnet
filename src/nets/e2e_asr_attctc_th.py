@@ -9,6 +9,7 @@ from __future__ import division
 import logging
 import math
 import sys
+import time
 
 import chainer
 import numpy as np
@@ -51,6 +52,13 @@ def lecun_normal_init_parameters(module):
         elif data.dim() == 2:
             # linear weight
             n = data.size(1)
+            stdv = 1. / math.sqrt(n)
+            data.normal_(0, stdv)
+        elif data.dim() == 3:
+            # conv1d weight
+            n = data.size(1)
+            for k in data.size()[2:]:
+                n *= k
             stdv = 1. / math.sqrt(n)
             data.normal_(0, stdv)
         elif data.dim() == 4:
@@ -256,6 +264,9 @@ class E2E(torch.nn.Module):
         elif args.atype == 'multi_head_add':
             self.att = AttMultiHeadAdd(args.eprojs, args.dunits,
                                        args.aheads, args.adim, args.adim)
+        elif args.atype == 'multi_head_cnn_add':
+            self.att = AttMultiHeadCnnAdd(args.eprojs, args.dunits,
+                                          args.aheads, args.adim, args.adim)
         elif args.atype == 'multi_head_loc':
             self.att = AttMultiHeadLoc(args.eprojs, args.dunits,
                                        args.aheads, args.adim, args.adim,
@@ -1412,104 +1423,132 @@ class AttMultiHeadAdd(torch.nn.Module):
         return c, w
 
 
-# class AttMultiHeadCnnAdd(torch.nn.Module):
-#     '''Multi head additive attention
-#
-#     Reference: Attention is all you need
-#         (https://arxiv.org/abs/1706.03762)
-#
-#     This attention is multi head attention using additive attention for each head.
-#
-#     :param int eprojs: # projection-units of encoder
-#     :param int dunits: # units of decoder
-#     :param int ahead: # heads of multi head attention
-#     :param int att_dim_k: dimension k in multi head attention
-#     :param int att_dim_v: dimension v in multi head attention
-#     '''
-#
-#     def __init__(self, eprojs, dunits, aheads, att_dim_k, att_dim_v):
-#         super(AttMultiHeadAdd, self).__init__()
-#         self.mlp_q = torch.nn.ModuleList()
-#         self.cnn_k = torch.nn.ModuleList()
-#         self.cnn_v = torch.nn.ModuleList()
-#         self.gvec = torch.nn.ModuleList()
-#         for h in six.moves.range(aheads):
-#             self.mlp_q += [torch.nn.Linear(dunits, att_dim_k)]
-#             self.cnn_k += [torch.nn.Linear(eprojs, att_dim_k, bias=False)]
-#             self.cnn_v += [torch.nn.Linear(eprojs, att_dim_v, bias=False)]
-#             self.gvec += [torch.nn.Linear(att_dim_k, 1)]
-#         self.mlp_o = torch.nn.Linear(aheads * att_dim_v, eprojs, bias=False)
-#         self.dunits = dunits
-#         self.eprojs = eprojs
-#         self.aheads = aheads
-#         self.att_dim_k = att_dim_k
-#         self.att_dim_v = att_dim_v
-#         self.scaling = 1.0 / math.sqrt(att_dim_k)
-#         self.h_length = None
-#         self.enc_h = None
-#         self.pre_compute_k = None
-#         self.pre_compute_v = None
-#
-#     def reset(self):
-#         '''reset states'''
-#         self.h_length = None
-#         self.enc_h = None
-#         self.pre_compute_k = None
-#         self.pre_compute_v = None
-#
-#     def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev):
-#         '''AttMultiHeadAdd forward
-#
-#         :param Variable enc_hs_pad: padded encoder hidden state (B x T_max x D_enc)
-#         :param list enc_h_len: padded encoder hidden state lenght (B)
-#         :param Variable dec_z: decoder hidden state (B x D_dec)
-#         :param Variable att_prev: dummy (does not use)
-#         :param float scaling: scaling parameter before applying softmax
-#         :return: attentioin weighted encoder state (B, D_enc)
-#         :rtype: Variable
-#         :return: list of previous attentioin weight (B x T_max) * aheads
-#         :rtype: list
-#         '''
-#
-#         batch = enc_hs_pad.size(0)
-#         # pre-compute all k and v outside the decoder loop
-#         if self.pre_compute_k is None:
-#             self.enc_h = enc_hs_pad  # utt x frame x hdim
-#             self.h_length = self.enc_h.size(1)
-#             # utt x frame x att_dim
-#             self.pre_compute_k = [
-#                 linear_tensor(self.mlp_k[h], self.enc_h) for h in six.moves.range(self.aheads)]
-#
-#         if self.pre_compute_v is None:
-#             self.enc_h = enc_hs_pad  # utt x frame x hdim
-#             self.h_length = self.enc_h.size(1)
-#             # utt x frame x att_dim
-#             self.pre_compute_v = [
-#                 linear_tensor(self.mlp_v[h], self.enc_h) for h in six.moves.range(self.aheads)]
-#
-#         if dec_z is None:
-#             dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
-#         else:
-#             dec_z = dec_z.view(batch, self.dunits)
-#
-#         c = []
-#         w = []
-#         for h in six.moves.range(self.aheads):
-#             e = linear_tensor(
-#                 self.gvec[h],
-#                 torch.tanh(
-#                     self.pre_compute_k[h] + self.mlp_q[h](dec_z).view(batch, 1, self.att_dim_k))).squeeze(2)
-#             w += [F.softmax(self.scaling * e, dim=1)]
-#
-#             # weighted sum over flames
-#             # utt x hdim
-#             # NOTE use bmm instead of sum(*)
-#             c += [torch.sum(self.pre_compute_v[h] * w[h].view(batch, self.h_length, 1), dim=1)]
-#
-#         # concat all of c
-#         c = self.mlp_o(torch.cat(c, dim=1))
-#
-#         return c, w
+class AttMultiHeadCnnAdd(torch.nn.Module):
+    '''Multi head additive attention
+
+    Reference: Attention is all you need
+        (https://arxiv.org/abs/1706.03762)
+
+    This attention is multi head attention using additive attention for each head.
+
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int ahead: # heads of multi head attention
+    :param int att_dim_k: dimension k in multi head attention
+    :param int att_dim_v: dimension v in multi head attention
+    '''
+
+    def __init__(self, eprojs, dunits, aheads, att_dim_k, att_dim_v):
+        super(AttMultiHeadCnnAdd, self).__init__()
+        self.mlp_q = torch.nn.ModuleList()
+        # self.mlp_k = torch.nn.ModuleList()
+        self.cnn_k = torch.nn.ModuleList()
+        self.mlp_v = torch.nn.ModuleList()
+        self.gvec = torch.nn.ModuleList()
+        for h in six.moves.range(aheads):
+            self.mlp_q += [torch.nn.Linear(dunits, att_dim_k)]
+            # self.mlp_k += [torch.nn.Linear(eprojs, att_dim_k, bias=False)]
+            # self.cnn_k += [torch.nn.Conv2d(1, att_dim_k, kernel_size=(3, eprojs),
+            #                                stride=1, padding=(3//2 + (h+1)// 2, 0), dilation=(h+1, 1), bias=True)] # padding = (kernel_size//2 + dilation//2, 0) to be same number of frames as original
+            self.cnn_k += [torch.nn.Conv1d(eprojs, att_dim_k, kernel_size=3,
+                                           stride=1, padding=3//2 + (h+1)// 2, dilation=h+1, bias=True)] # padding = (kernel_size//2 + dilation//2, 0) to be same number of frames as original
+            self.mlp_v += [torch.nn.Linear(eprojs, att_dim_v, bias=False)]
+            self.gvec += [torch.nn.Linear(att_dim_k, 1)]
+        self.mlp_o = torch.nn.Linear(aheads * att_dim_v, eprojs, bias=False)
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.aheads = aheads
+        self.att_dim_k = att_dim_k
+        self.att_dim_v = att_dim_v
+        self.scaling = 1.0 / math.sqrt(att_dim_k)
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_k = None
+        self.pre_compute_v = None
+
+        # self.cum_elapsed_time = 0.0
+        # self.cum_elapsed_time_cnt = 0
+
+    def reset(self):
+        '''reset states'''
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_k = None
+        self.pre_compute_v = None
+
+
+    def apply_cnn_head_transform(self, cnn, x):
+
+        xs = x.view(x.size(0), 1, x.size(1), x.size(2))
+        return cnn(xs).squeeze(-1).transpose(1, 2)
+
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev):
+        '''AttMultiHeadAdd forward
+
+        :param Variable enc_hs_pad: padded encoder hidden state (B x T_max x D_enc)
+        :param list enc_h_len: padded encoder hidden state lenght (B)
+        :param Variable dec_z: decoder hidden state (B x D_dec)
+        :param Variable att_prev: dummy (does not use)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: list of previous attentioin weight (B x T_max) * aheads
+        :rtype: list
+        '''
+
+        batch = enc_hs_pad.size(0)
+        # pre-compute all k and v outside the decoder loop
+        if self.pre_compute_k is None:
+            self.enc_h = enc_hs_pad  # utt x frame x hdim
+            self.h_length = self.enc_h.size(1)
+            # utt x frame x att_dim
+            # st_time = time.time()
+            # enc_h_reshaped = self.enc_h.view(self.enc_h.size(0), 1, self.enc_h.size(1), self.enc_h.size(2))
+            # self.pre_compute_k = [
+            #     self.cnn_k[h](enc_h_reshaped).squeeze(-1).transpose(1, 2) for h in six.moves.range(self.aheads)]
+
+            enc_h_reshaped = self.enc_h.view(self.enc_h.size(0), self.enc_h.size(2), self.enc_h.size(1))
+            self.pre_compute_k = [
+                self.cnn_k[h](enc_h_reshaped).transpose(1, 2) for h in six.moves.range(self.aheads)]
+
+            # import pdb; pdb.set_trace()
+            # en_time = time.time()
+            # self.cum_elapsed_time += (en_time - st_time)
+            # self.cum_elapsed_time_cnt += 1
+
+            print(self.cum_elapsed_time, self.cum_elapsed_time/self.cum_elapsed_time_cnt)
+
+        if self.pre_compute_v is None:
+            self.enc_h = enc_hs_pad  # utt x frame x hdim
+            self.h_length = self.enc_h.size(1)
+            # utt x frame x att_dim
+            self.pre_compute_v = [
+                linear_tensor(self.mlp_v[h], self.enc_h) for h in six.moves.range(self.aheads)]
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        c = []
+        w = []
+        for h in six.moves.range(self.aheads):
+            e = linear_tensor(
+                self.gvec[h],
+                torch.tanh(
+                    self.pre_compute_k[h] + self.mlp_q[h](dec_z).view(batch, 1, self.att_dim_k))).squeeze(2)
+            w += [F.softmax(self.scaling * e, dim=1)]
+
+            # weighted sum over flames
+            # utt x hdim
+            # NOTE use bmm instead of sum(*)
+            c += [torch.sum(self.pre_compute_v[h] * w[h].view(batch, self.h_length, 1), dim=1)]
+
+        # concat all of c
+        c = self.mlp_o(torch.cat(c, dim=1))
+
+        return c, w
 
 
 class AttMultiHeadLoc(torch.nn.Module):
@@ -2106,7 +2145,8 @@ class Decoder(torch.nn.Module):
         elif isinstance(self.att, AttLocRec):
             # att_ws => list of tuple of attention and hidden states
             att_ws = torch.stack([aw[0] for aw in att_ws], dim=1).data.cpu().numpy()
-        elif isinstance(self.att, (AttMultiHeadDot, AttMultiHeadAdd, AttMultiHeadLoc, AttMultiHeadMultiResLoc)):
+        elif isinstance(self.att, (AttMultiHeadDot, AttMultiHeadAdd, AttMultiHeadLoc, AttMultiHeadMultiResLoc,
+                                   AttMultiHeadCnnAdd)):
             # att_ws => list of list of each head attetion
             n_heads = len(att_ws[0])
             att_ws_sorted_by_head = []
