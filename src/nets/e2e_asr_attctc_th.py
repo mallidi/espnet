@@ -1451,7 +1451,7 @@ class AttMultiHeadCnnAdd(torch.nn.Module):
             # self.cnn_k += [torch.nn.Conv2d(1, att_dim_k, kernel_size=(3, eprojs),
             #                                stride=1, padding=(3//2 + (h+1)// 2, 0), dilation=(h+1, 1), bias=True)] # padding = (kernel_size//2 + dilation//2, 0) to be same number of frames as original
             self.cnn_k += [torch.nn.Conv1d(eprojs, att_dim_k, kernel_size=3,
-                                           stride=1, padding=3//2 + (h+1)// 2, dilation=h+1, bias=True)] # padding = (kernel_size//2 + dilation//2, 0) to be same number of frames as original
+                                           stride=1, padding=(3//2) * (h+1), dilation=h+1, bias=True)] # padding = (kernel_size//2 + dilation//2, 0) to be same number of frames as original
             self.mlp_v += [torch.nn.Linear(eprojs, att_dim_v, bias=False)]
             self.gvec += [torch.nn.Linear(att_dim_k, 1)]
         self.mlp_o = torch.nn.Linear(aheads * att_dim_v, eprojs, bias=False)
@@ -1543,6 +1543,10 @@ class AttMultiHeadCnnAdd(torch.nn.Module):
             # weighted sum over flames
             # utt x hdim
             # NOTE use bmm instead of sum(*)
+            # print(self.cnn_k[h])
+            # print(self.pre_compute_k[h].shape)
+            # print(self.pre_compute_v[h].shape)
+            # print(w[h].view(batch, self.h_length, 1).shape)
             c += [torch.sum(self.pre_compute_v[h] * w[h].view(batch, self.h_length, 1), dim=1)]
 
         # concat all of c
