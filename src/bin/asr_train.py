@@ -78,7 +78,7 @@ def main():
                                  'coverage_location', 'location2d', 'location_recurrent',
                                  'multi_head_dot', 'multi_head_add', 'multi_head_loc',
                                  'multi_head_multi_res_loc',
-                                 'multi_head_cnn_add', 'multi_head_cnn_add_v1'],
+                                 'multi_head_cnn_add', 'multi_head_cnn_add_v1', 'multi_head_cnn_add_v2'],
                         help='Type of attention architecture')
     parser.add_argument('--adim', default=320, type=int,
                         help='Number of attention transformation dimensions')
